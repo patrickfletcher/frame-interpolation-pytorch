@@ -3,6 +3,7 @@ import warnings
 import numpy as np
 import tensorflow as tf
 import torch
+import time as systime
 
 from interpolator import Interpolator
 
@@ -100,7 +101,12 @@ def test_model(interpolator, model, half=False, gpu=False):
     verify_debug_outputs(pt_outputs, tf_outputs)
 
     with torch.no_grad():
-        prediction = interpolator(x0, x1, time)
+        start_time = systime.perf_counter()
+        for i in range(32):
+            prediction = interpolator(x0, x1, time)
+        end_time = systime.perf_counter()
+        print(f"Time for 32 frames: {end_time-start_time}")
+
     output_color = prediction.permute(0, 2, 3, 1).detach().cpu().numpy()
     true_color = tf_outputs['image'].numpy()
     error = np.abs(output_color - true_color).max()
