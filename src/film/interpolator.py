@@ -68,10 +68,10 @@ from typing import Dict, List
 import torch
 from torch import nn
 
-import util
-from feature_extractor import FeatureExtractor
-from fusion import Fusion
-from pyramid_flow_estimator import PyramidFlowEstimator
+from . import util
+from .feature_extractor import FeatureExtractor
+from .fusion import Fusion
+from .pyramid_flow_estimator import PyramidFlowEstimator
 
 
 class Interpolator(nn.Module):

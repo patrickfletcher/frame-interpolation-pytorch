@@ -1,0 +1,14 @@
+LICENSE
+README.md
+setup.py
+src/film/__init__.py
+src/film/feature_extractor.py
+src/film/fusion.py
+src/film/inference.py
+src/film/interpolator.py
+src/film/pyramid_flow_estimator.py
+src/film/util.py
+src/film.egg-info/PKG-INFO
+src/film.egg-info/SOURCES.txt
+src/film.egg-info/dependency_links.txt
+src/film.egg-info/top_level.txt

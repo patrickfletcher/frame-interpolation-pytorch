@@ -26,7 +26,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-import util
+from . import util
 
 
 class FlowEstimator(nn.Module):

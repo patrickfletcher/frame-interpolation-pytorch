@@ -1,0 +1,12 @@
+Metadata-Version: 2.1
+Name: film
+Version: 0.1
+Summary: FILM Frame Interpolation
+Home-page: UNKNOWN
+License: UNKNOWN
+Platform: UNKNOWN
+Requires-Python: >=3.7
+License-File: LICENSE
+
+Pytorch implementation of FILM: Frame Interpolation for Large Motion
+

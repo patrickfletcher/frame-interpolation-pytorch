@@ -5,8 +5,7 @@ import tensorflow as tf
 import torch
 import time as systime
 
-from interpolator import Interpolator
-
+from src.film.interpolator import Interpolator
 
 def translate_state_dict(var_dict, state_dict):
     for name, (prev_name, weight) in zip(state_dict, var_dict.items()):

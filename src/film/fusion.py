@@ -31,7 +31,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from util import conv
+from .util import conv
 
 _NUMBER_OF_COLOR_CHANNELS = 3
 
