@@ -57,28 +57,11 @@ def import_state_dict(interpolator: Interpolator, saved_model):
     interpolator.predict_flow.load_state_dict(flow_dict)
     interpolator.fuse.load_state_dict(fuse_dict)
 
-
-def verify_debug_outputs(pt_outputs, tf_outputs):
-    max_error = 0
-    for name, predicted in pt_outputs.items():
-        if name == 'image':
-            continue
-        pred_frfp = [f.permute(0, 2, 3, 1).detach().cpu().numpy() for f in predicted]
-        true_frfp = [f.numpy() for f in tf_outputs[name]]
-
-        for i, (pred, true) in enumerate(zip(pred_frfp, true_frfp)):
-            assert pred.shape == true.shape, f'{name} {i} shape mismatch {pred.shape} != {true.shape}'
-            error = np.max(np.abs(pred - true))
-            max_error = max(max_error, error)
-            assert error < 1, f'{name} {i} max error: {error}'
-    print('Max intermediate error:', max_error)
-
-
 def test_model(interpolator, model, half=False, gpu=False):
     torch.manual_seed(0)
     time = torch.full((1, 1), .5)
-    x0 = torch.rand(1, 3, 256, 256)
-    x1 = torch.rand(1, 3, 256, 256)
+    x0 = torch.rand(1, 3, 512, 512)
+    x1 = torch.rand(1, 3, 512, 512)
 
     x0_ = tf.convert_to_tensor(x0.permute(0, 2, 3, 1).numpy(), dtype=tf.float32)
     x1_ = tf.convert_to_tensor(x1.permute(0, 2, 3, 1).numpy(), dtype=tf.float32)
@@ -88,26 +71,33 @@ def test_model(interpolator, model, half=False, gpu=False):
     if half:
         x0 = x0.half()
         x1 = x1.half()
-        time = time.half()
 
     if gpu and torch.cuda.is_available():
         x0 = x0.cuda()
         x1 = x1.cuda()
-        time = time.cuda()
 
     with torch.no_grad():
-        pt_outputs = interpolator.debug_forward(x0, x1, time)
 
-    verify_debug_outputs(pt_outputs, tf_outputs)
-
-    with torch.no_grad():
+        interpolator(x0, x1, 0, [0.5]) # warmup
         start_time = systime.perf_counter()
-        for i in range(32):
-            prediction = interpolator(x0, x1, time)
+        for i in range(15):
+            prediction = interpolator(x0, x1, 0, [0.5])
         end_time = systime.perf_counter()
-        print(f"Time for 32 frames: {end_time-start_time}")
+        print(f"Time for 15 frames without intermediate calculation re-use: {end_time-start_time}")
 
-    output_color = prediction.permute(0, 2, 3, 1).detach().cpu().numpy()
+        interpolator(x0, x1, 3, [0.5]) # warmup
+        start_time = systime.perf_counter()
+        prediction = interpolator(x0, x1, 3, [0.5])
+        end_time = systime.perf_counter()
+        print(f"Time for {len(prediction)} frames re-using feature pyramids in bisections: {end_time-start_time}")
+
+        interpolator(x0, x1, 1, [0.25, 0.5, 0.75]) # warmup
+        start_time = systime.perf_counter()
+        prediction = interpolator(x0, x1, 2, [0.25, 0.5, 0.75])
+        end_time = systime.perf_counter()
+        print(f"Time for {len(prediction)} frames using multiple timesteps: {end_time-start_time}")
+
+    output_color = prediction[0].permute(0, 2, 3, 1).detach().cpu().numpy()
     true_color = tf_outputs['image'].numpy()
     error = np.abs(output_color - true_color).max()
 

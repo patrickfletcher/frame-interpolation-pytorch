@@ -93,18 +93,7 @@ class Interpolator(nn.Module):
         self.predict_flow = PyramidFlowEstimator(filters, flow_convs, flow_filters)
         self.fuse = Fusion(sub_levels, specialized_levels, filters)
 
-    def shuffle_images(self, x0, x1):
-        return [
-            util.build_image_pyramid(x0, self.pyramid_levels),
-            util.build_image_pyramid(x1, self.pyramid_levels)
-        ]
-
-    def debug_forward(self, x0, x1, batch_dt) -> Dict[str, List[torch.Tensor]]:
-        image_pyramids = self.shuffle_images(x0, x1)
-
-        # Siamese feature pyramids:
-        feature_pyramids = [self.extract(image_pyramids[0]), self.extract(image_pyramids[1])]
-
+    def flow_and_fuse(self, image_pyramids, feature_pyramids, time_steps):
         # Predict forward flow.
         forward_residual_flow_pyramid = self.predict_flow(feature_pyramids[0], feature_pyramids[1])
 
@@ -120,15 +109,6 @@ class Interpolator(nn.Module):
 
         backward_flow_pyramid = util.flow_pyramid_synthesis(backward_residual_flow_pyramid)[:self.fusion_pyramid_levels]
 
-        # We multiply the flows with t and 1-t to warp to the desired fractional time.
-        #
-        # Note: In film_net we fix time to be 0.5, and recursively invoke the interpo-
-        # lator for multi-frame interpolation. Below, we create a constant tensor of
-        # shape [B]. We use the `time` tensor to infer the batch size.
-        mid_time = torch.full_like(batch_dt, .5)
-        backward_flow = util.multiply_pyramid(backward_flow_pyramid, mid_time[:, 0])
-        forward_flow = util.multiply_pyramid(forward_flow_pyramid, 1 - mid_time[:, 0])
-
         pyramids_to_warp = [
             util.concatenate_pyramids(image_pyramids[0][:self.fusion_pyramid_levels],
                                       feature_pyramids[0][:self.fusion_pyramid_levels]),
@@ -136,25 +116,55 @@ class Interpolator(nn.Module):
                                       feature_pyramids[1][:self.fusion_pyramid_levels])
         ]
 
-        # Warp features and images using the flow. Note that we use backward warping
-        # and backward flow is used to read from image 0 and forward flow from
-        # image 1.
-        forward_warped_pyramid = util.pyramid_warp(pyramids_to_warp[0], backward_flow)
-        backward_warped_pyramid = util.pyramid_warp(pyramids_to_warp[1], forward_flow)
+        results = []
+        for time_step in time_steps:
+            mid_time = torch.full((1,1), time_step, dtype=image_pyramids[0][0].dtype, device=image_pyramids[0][0].device)
+            backward_flow = util.multiply_pyramid(backward_flow_pyramid, mid_time[:, 0])
+            forward_flow = util.multiply_pyramid(forward_flow_pyramid, 1 - mid_time[:, 0])
 
-        aligned_pyramid = util.concatenate_pyramids(forward_warped_pyramid,
-                                                    backward_warped_pyramid)
-        aligned_pyramid = util.concatenate_pyramids(aligned_pyramid, backward_flow)
-        aligned_pyramid = util.concatenate_pyramids(aligned_pyramid, forward_flow)
+            # Warp features and images using the flow. Note that we use backward warping
+            # and backward flow is used to read from image 0 and forward flow from
+            # image 1.
+            forward_warped_pyramid = util.pyramid_warp(pyramids_to_warp[0], backward_flow)
+            backward_warped_pyramid = util.pyramid_warp(pyramids_to_warp[1], forward_flow)
 
-        return {
-            'image': [self.fuse(aligned_pyramid)],
-            'forward_residual_flow_pyramid': forward_residual_flow_pyramid,
-            'backward_residual_flow_pyramid': backward_residual_flow_pyramid,
-            'forward_flow_pyramid': forward_flow_pyramid,
-            'backward_flow_pyramid': backward_flow_pyramid,
-        }
+            aligned_pyramid = util.concatenate_pyramids(forward_warped_pyramid,
+                                                        backward_warped_pyramid)
+            aligned_pyramid = util.concatenate_pyramids(aligned_pyramid, backward_flow)
+            aligned_pyramid = util.concatenate_pyramids(aligned_pyramid, forward_flow)
+            results.append(self.fuse(aligned_pyramid))
+
+        return results
+     
+    def recursively_bisect(self, image_pyramids, feature_pyramids, bisections_remaining, final_timesteps):
+        if(bisections_remaining == 0):
+            # for the final layer of the bisections, use final_timesteps (to squeeze out some extra frames
+            # using multiple timesteps: even the model doesn't work as well outside of t=0.5, changes should be
+            # small here that it may not matter much)
+            return self.flow_and_fuse(image_pyramids, feature_pyramids, final_timesteps)
+
+        # for all other layers, time_step is 0.5
+        this_midpoint_image = self.flow_and_fuse(image_pyramids, feature_pyramids, [0.5])[0]
+        
+        # bisect left
+        left_image_pyramids = [image_pyramids[0], util.build_image_pyramid(this_midpoint_image, self.pyramid_levels)]
+        left_feature_pyramids = [feature_pyramids[0], self.extract(left_image_pyramids[1])]
+        left_result = self.recursively_bisect(left_image_pyramids, left_feature_pyramids, bisections_remaining-1, final_timesteps)
+
+        # free up the LHS memory right away
+        image_pyramids[0] = None
+        feature_pyramids[0] = None
+        left_image_pyramids[0] = None
+        left_feature_pyramids[0] = None
+
+        # bisect right 
+        right_image_pyramids = [left_image_pyramids[1], image_pyramids[1]]
+        right_feature_pyramids = [left_feature_pyramids[1], feature_pyramids[1]]
+        right_result = self.recursively_bisect(right_image_pyramids, right_feature_pyramids, bisections_remaining-1, final_timesteps)
+        return left_result + [this_midpoint_image] + right_result
 
     @torch.jit.export
-    def forward(self, x0, x1, batch_dt) -> torch.Tensor:
-        return self.debug_forward(x0, x1, batch_dt)['image'][0]
+    def forward(self, x0, x1, num_bisections, final_timesteps) -> List[torch.Tensor]:
+        image_pyramids =  [util.build_image_pyramid(x0, self.pyramid_levels), util.build_image_pyramid(x1, self.pyramid_levels)]
+        feature_pyramids = [self.extract(image_pyramids[0]), self.extract(image_pyramids[1])]
+        return self.recursively_bisect(image_pyramids, feature_pyramids, num_bisections, final_timesteps)
