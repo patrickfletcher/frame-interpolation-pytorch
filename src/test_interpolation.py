@@ -8,11 +8,26 @@ from film.util import *
 
 FILMModelPath = "./models/film_net_fp16.pt"
 
-# Barring training on dt!=0.5, for quality the strategy should be:
-# - decide T = number of interpolated frames needed 
-# - bisection: nodes in a binary tree with D levels gives N=(2**D-1) high quality frames
-# - one more level would an extra:  
-# - choose D such that N < T, add extra bisection to first and last interval (+2)
+# There are many possible interpolation "schedules" with different performance/quality tradeoffs
+
+# different options for display:
+# - fixed display rate + fixed frame number --> pauses (variable length if BLIP interferes)
+# - continuous mode: generate enough frames so the pauses can be absorbed
+# -- maybe could have a control system that varies FPS (slowly/by small amounts) to deal with the BLIP disturbances
+
+# Formulas for bisection-generated frames
+# - the interpolated frames from bisection form a complete binary tree, each node is an interpolated frame
+# - H = height of tree
+# -- number of nodes in the tree:      N = 2**(H+1)-1
+# -- number of leaf nodes at height H: L = 2**H = (N+1)/2
+# -- number of intervals at height H:  I = N + 1 = 2**(H+1)
+
+# example: two bisections (H=1)
+# 1. bisection H=1 --> 3 frames
+# A. in each remaining interval (), get 1 averaged frame --> I = 2**(1+1) = 4
+# --> total frames = 3 + 4 = 7
+# B. in each remaining interval (), get 3 frames --> 3 * I = 3*2**(1+1) = 12
+# --> total frames = 3 + 12 = 15
 
 class Config():
     def __init__(self):
@@ -25,14 +40,12 @@ class Config():
 config = Config()
 
 def findBisectionLevel(total):
-    D=0
-    N=0
-    while N < total:
-        D = D+1
-        N = 2**D-1
-    D = D-1
-    N = 2**D-1
-    return D, N
+    H=0
+    while 2**(H+1 + 1)-1 < total:
+        H = H+1
+
+    N = 2**(H+1)-1
+    return H, N
 
 class FrameGenerator():
 
@@ -67,11 +80,11 @@ class FrameGenerator():
         if config.doSecondaryInterpolation:
             num_interpolated_frames = math.ceil(num_interpolated_frames / 2)
 
-        print(f" nTotal: {total_frames_needed}\n nInterp: {num_interpolated_frames}\n")
+        print(f" total_frames_needed: {total_frames_needed}\n num_interpolated_frames: {num_interpolated_frames}\n")
 
-        num_bisections, num_bisect_frames = findBisectionLevel(num_interpolated_frames) 
+        num_bisections, num_bisection_frames = findBisectionLevel(num_interpolated_frames) 
 
-        print(f" bisection level: {num_bisections}\n num_bisection_frames: {num_bisect_frames}\n")
+        print(f" num_bisections: {num_bisections}\n num_bisection_frames: {num_bisection_frames}\n bisection + secondary: {2**(num_bisections+2)-1}\n")
 
         with torch.no_grad():
             # With multiple time steps, FILM can get a nice sharp flow (and
@@ -81,22 +94,25 @@ class FrameGenerator():
             # To address this, use bisection for 30% of the frames at
             # the start and end (15% each) to connect the main chunk
             # to the start/end frames
-            bisections_per_side = max(
-                0.0,
-                round(math.log(num_interpolated_frames*0.15, 2)-1)
-            )
-            bisection_total_frames = int(2*(2**(bisections_per_side+1)-1))
-            midsection_total_frames = int(num_interpolated_frames - bisection_total_frames)
-            bisection_pct = bisection_total_frames / num_interpolated_frames
-            mid_timesteps = torch.linspace(0.0, 1.0, midsection_total_frames)
-
-            print(f" nMid: {midsection_total_frames}\n nBisect: {bisection_total_frames}")
-            print(f"midTimesteps: {mid_timesteps}")
-
+            # bisections_per_side = max(
+            #     0.0,
+            #     round(math.log(num_interpolated_frames*0.15, 2)-1)
+            # )
+            # bisection_total_frames = int(2*(2**(bisections_per_side+1)-1))
+            # midsection_total_frames = int(num_interpolated_frames - bisection_total_frames)
+            # bisection_pct = bisection_total_frames / num_interpolated_frames
+            # mid_timesteps = torch.linspace(0.0, 1.0, midsection_total_frames) # this seems to generate duplicates because 0 and 1 are included?
+            # 
             # mid_results = self.FILMModel(img0, img1, 0, mid_timesteps)
             # start_results = self.FILMModel(img0, mid_results[0], bisections_per_side, [0.5])
             # end_results = self.FILMModel(mid_results[-1], img1, bisections_per_side, [0.5]) 
             # results = start_results + mid_results + end_results
+
+            # alternate tests
+            #################
+            
+            # results = self.FILMModel(img0, img1, 3, [0.5])
+            results = self.FILMModel(img0, img1, 2, [0.25, 0.5, 0.75])
 
             # mid_results = self.FILMModel(img0, img1, num_bisections, [0.5])
             # start_results = self.FILMModel(img0, mid_results[0], 0, [0.5])
@@ -108,7 +124,6 @@ class FrameGenerator():
             # end_results = self.FILMModel(mid_results[-1], img1, 0, [0.5]) 
             # results = start_results + mid_results + end_results
             
-            results = self.FILMModel(img0, img1, num_bisections, [0.5])
 
         # add an additional frame between each exisiting frame by averaging successive pairs
         if config.doSecondaryInterpolation:
@@ -127,6 +142,7 @@ class FrameGenerator():
         y1, x1, y2, x2 = crop0
         # frames = [(tensor[0].clamp(0.0, 1.0).cpu() * 255).to(torch.uint8).permute(1, 2, 0).numpy()[y1:y2, x1:x2].copy() for tensor in results]
         
+        ###################################################
         # for opencv saving:
         # append the originals for making the movie
         results = [img0] + results + [img1]

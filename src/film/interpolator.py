@@ -136,20 +136,25 @@ class Interpolator(nn.Module):
 
         return results
      
-    def recursively_bisect(self, image_pyramids, feature_pyramids, bisections_remaining, final_timesteps):
+    def recursively_bisect(self, image_pyramids, feature_pyramids, bisections_remaining, final_timesteps, times):
         if(bisections_remaining == 0):
             # for the final layer of the bisections, use final_timesteps (to squeeze out some extra frames
             # using multiple timesteps: even the model doesn't work as well outside of t=0.5, changes should be
             # small here that it may not matter much)
+            print([times[0]+(times[1]-times[0])*tf for tf in final_timesteps])
             return self.flow_and_fuse(image_pyramids, feature_pyramids, final_timesteps)
 
         # for all other layers, time_step is 0.5
         this_midpoint_image = self.flow_and_fuse(image_pyramids, feature_pyramids, [0.5])[0]
+        midtime = (times[1] + times[0])/2
+        lefttimes = [times[0], midtime]
+        righttimes = [midtime, times[1]]
+        print(midtime)
         
         # bisect left
         left_image_pyramids = [image_pyramids[0], util.build_image_pyramid(this_midpoint_image, self.pyramid_levels)]
         left_feature_pyramids = [feature_pyramids[0], self.extract(left_image_pyramids[1])]
-        left_result = self.recursively_bisect(left_image_pyramids, left_feature_pyramids, bisections_remaining-1, final_timesteps)
+        left_result = self.recursively_bisect(left_image_pyramids, left_feature_pyramids, bisections_remaining-1, final_timesteps, lefttimes)
 
         # free up the LHS memory right away
         image_pyramids[0] = None
@@ -160,11 +165,12 @@ class Interpolator(nn.Module):
         # bisect right 
         right_image_pyramids = [left_image_pyramids[1], image_pyramids[1]]
         right_feature_pyramids = [left_feature_pyramids[1], feature_pyramids[1]]
-        right_result = self.recursively_bisect(right_image_pyramids, right_feature_pyramids, bisections_remaining-1, final_timesteps)
+        right_result = self.recursively_bisect(right_image_pyramids, right_feature_pyramids, bisections_remaining-1, final_timesteps, righttimes)
         return left_result + [this_midpoint_image] + right_result
 
     @torch.jit.export
     def forward(self, x0, x1, num_bisections, final_timesteps) -> List[torch.Tensor]:
         image_pyramids =  [util.build_image_pyramid(x0, self.pyramid_levels), util.build_image_pyramid(x1, self.pyramid_levels)]
         feature_pyramids = [self.extract(image_pyramids[0]), self.extract(image_pyramids[1])]
-        return self.recursively_bisect(image_pyramids, feature_pyramids, num_bisections, final_timesteps)
+        times = [0,1]
+        return self.recursively_bisect(image_pyramids, feature_pyramids, num_bisections, final_timesteps, times)
