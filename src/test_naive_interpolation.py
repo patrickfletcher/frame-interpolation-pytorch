@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 from film.interpolator import Interpolator as FilmInterpolator
 from film.util import *
+import bisect
 
 FILMModelPath = "./models/film_net_fp16.pt"
 
@@ -31,10 +32,9 @@ FILMModelPath = "./models/film_net_fp16.pt"
 
 class Config():
     def __init__(self):
-        self.sdWorkerFixedCycleTime = 3.2
-        self.targetFps = 10
-        self.bisectionLevels = 3
+        self.num_interp = 31
         self.doSecondaryInterpolation = False
+        self.targetFps = 10
         self.save_path = "./output/output.mp4"
 
 config = Config()
@@ -71,63 +71,34 @@ class FrameGenerator():
         img0 = torch.from_numpy(img0).permute(0, 3, 1, 2).half().to(device)
         img1 = torch.from_numpy(img1).permute(0, 3, 1, 2).half().to(device)
 
-        total_frames_needed = math.ceil(config.sdWorkerFixedCycleTime * config.targetFps)
-        # already have the one new frame from SD
-        num_interpolated_frames = total_frames_needed - 1
 
-        # we'll get half the new frames from secondary interpolation if
-        # that's enabled (one less that the total frames because we
-        if config.doSecondaryInterpolation:
-            num_interpolated_frames = math.ceil(num_interpolated_frames / 2)
+        results = [img0, img1]
+        idxes = [0, config.num_interp + 1]
+        remains = list(range(1, config.num_interp + 1))
+        splits = torch.linspace(0, 1, config.num_interp + 2)
 
-        print(f" total_frames_needed: {total_frames_needed}\n num_interpolated_frames: {num_interpolated_frames}\n")
+        for _ in range(len(remains)):
+            starts = splits[idxes[:-1]]
+            ends = splits[idxes[1:]]
+            distances = ((splits[None, remains] - starts[:, None]) / (ends[:, None] - starts[:, None]) - .5).abs()
+            matrix = torch.argmin(distances).item()
+            start_i, step = np.unravel_index(matrix, distances.shape)
+            end_i = start_i + 1
 
-        num_bisections, num_bisection_frames = findBisectionLevel(num_interpolated_frames)
-        bisections_per_side, num_side_frames = findBisectionLevel(math.ceil(num_interpolated_frames - num_bisection_frames)) 
-        print(f" num_bisections: {num_bisections}\n num_bisection_frames: {num_bisection_frames}\n")
-        print(f" bisections_per_side: {bisections_per_side}\n num_side_frames: {2*num_side_frames}\n")
-        # print(f" num_bisections: {num_bisections}\n num_bisection_frames: {num_bisection_frames}\n bisection + secondary: {2**(num_bisections+2)-1}\n")
+            x0 = results[start_i]
+            x1 = results[end_i]
 
-
-        with torch.no_grad():
-            # With multiple time steps, FILM can get a nice sharp flow (and
-            # runs much faster per frame, as it just need to redo the
-            # fusion layer), but it has trouble at the edges to actually line
-            # up to the start/end images.
-            # To address this, use bisection for 30% of the frames at
-            # the start and end (15% each) to connect the main chunk
-            # to the start/end frames
-            # bisections_per_side = max(0.0,
-            #     round(math.log(num_interpolated_frames*0.15, 2)-1)
-            # )
-            # bisection_total_frames = int(2*(2**(bisections_per_side+1)-1))
-            # midsection_total_frames = int(num_interpolated_frames - bisection_total_frames)
-            # print(f" bisection_total_frames: {bisection_total_frames}\n midsection_total_frames: {midsection_total_frames}\n")
-            # bisection_pct = bisection_total_frames / num_interpolated_frames
-            # mid_timesteps = np.linspace(0.0, 1.0, midsection_total_frames).tolist()
-            # print(f" mid_timesteps: {mid_timesteps}")
+            # dt = x0.new_full((1, 1), (splits[remains[step]] - splits[idxes[start_i]])) / (splits[idxes[end_i]] - splits[idxes[start_i]])
+            dt = (splits[remains[step]] - splits[idxes[start_i]]) / (splits[idxes[end_i]] - splits[idxes[start_i]])
+            dt = [dt.tolist()]
+            with torch.no_grad():
+                prediction = self.FILMModel(x0, x1, 0, dt)
+            insert_position = bisect.bisect_left(idxes, remains[step])
+            idxes.insert(insert_position, remains[step])
+            results.insert(insert_position, prediction[0].clamp(0, 1))
+            del remains[step]
             
-            # mid_results = self.FILMModel(img0, img1, 0, mid_timesteps)
-            # start_results = self.FILMModel(img0, mid_results[0], bisections_per_side, [0.5]) # why does this not generate a duplicate, as mid_results[0] was dt=0?
-            # end_results = self.FILMModel(mid_results[-1], img1, bisections_per_side, [0.5]) 
-            # results = start_results + mid_results + end_results
-
-            # alternate tests
-            #################
-            
-            results = self.FILMModel(img0, img1, 4, [0.5])
-            # results = self.FILMModel(img0, img1, 3, [0.33, 0.66])
-
-            # mid_results = self.FILMModel(img0, img1, num_bisections, [0.5])
-            # start_results = self.FILMModel(img0, mid_results[0], bisections_per_side, [0.5])
-            # end_results = self.FILMModel(mid_results[-1], img1, bisections_per_side, [0.5]) 
-            # results = start_results + mid_results + end_results
-
-            # mid_results = self.FILMModel(img0, img1, config.bisectionLevels, [0.5])
-            # start_results = self.FILMModel(img0, mid_results[0], 0, [0.5])
-            # end_results = self.FILMModel(mid_results[-1], img1, 0, [0.5]) 
-            # results = start_results + mid_results + end_results
-            
+            # results = self.FILMModel(img0, img1, 0, [0.5])
 
         # add an additional frame between each exisiting frame by averaging successive pairs
         if config.doSecondaryInterpolation:
@@ -151,7 +122,7 @@ class FrameGenerator():
         ###################################################
         # for opencv saving:
         # append the originals for making the movie
-        results = [img0] + results + [img1]
+        # results = [img0] + results + [img1]
         frames = [(tensor[0].clamp(0.0, 1.0).cpu() * 255).byte().flip(0).permute(1, 2, 0).numpy()[y1:y2, x1:x2].copy() for tensor in results]
 
         tnow = time.time()

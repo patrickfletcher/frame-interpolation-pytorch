@@ -141,7 +141,7 @@ class Interpolator(nn.Module):
             # for the final layer of the bisections, use final_timesteps (to squeeze out some extra frames
             # using multiple timesteps: even the model doesn't work as well outside of t=0.5, changes should be
             # small here that it may not matter much)
-            print([times[0]+(times[1]-times[0])*tf for tf in final_timesteps])
+            # print([times[0]+(times[1]-times[0])*tf for tf in final_timesteps])
             return self.flow_and_fuse(image_pyramids, feature_pyramids, final_timesteps)
 
         # for all other layers, time_step is 0.5
@@ -150,7 +150,7 @@ class Interpolator(nn.Module):
         midtime = (times[1] + times[0])/2
         lefttimes = [times[0], midtime]
         righttimes = [midtime, times[1]]
-        print(midtime)
+        # print(midtime)
         
         # bisect left
         left_image_pyramids = [image_pyramids[0], util.build_image_pyramid(this_midpoint_image, self.pyramid_levels)]
