@@ -82,8 +82,8 @@ class FrameGenerator():
 
         print(f" total_frames_needed: {total_frames_needed}\n num_interpolated_frames: {num_interpolated_frames}\n")
 
-        # num_bisections, num_bisection_frames = findBisectionLevel(num_interpolated_frames) 
-        # print(f" num_bisections: {num_bisections}\n num_bisection_frames: {num_bisection_frames}\n bisection + secondary: {2**(num_bisections+2)-1}\n")
+        num_bisections, num_bisection_frames = findBisectionLevel(num_interpolated_frames) 
+        print(f" num_bisections: {num_bisections}\n num_bisection_frames: {num_bisection_frames}\n bisection + secondary: {2**(num_bisections+2)-1}\n")
 
         with torch.no_grad():
             # With multiple time steps, FILM can get a nice sharp flow (and
@@ -101,11 +101,11 @@ class FrameGenerator():
             midsection_total_frames = int(num_interpolated_frames - bisection_total_frames)
             print(f" bisection_total_frames: {bisection_total_frames}\n midsection_total_frames: {midsection_total_frames}\n")
             bisection_pct = bisection_total_frames / num_interpolated_frames
-            mid_timesteps = torch.linspace(0.0, 1.0, midsection_total_frames) # this seems to generate duplicates because 0 and 1 are included?
+            mid_timesteps = np.linspace(0.0, 1.0, midsection_total_frames).tolist()
             print(f" mid_timesteps: {mid_timesteps}")
             
             mid_results = self.FILMModel(img0, img1, 0, mid_timesteps)
-            start_results = self.FILMModel(img0, mid_results[0], bisections_per_side, [0.5])
+            start_results = self.FILMModel(img0, mid_results[0], bisections_per_side, [0.5]) # why does this not generate a duplicate, as mid_results[0] was dt=0?
             end_results = self.FILMModel(mid_results[-1], img1, bisections_per_side, [0.5]) 
             results = start_results + mid_results + end_results
 
