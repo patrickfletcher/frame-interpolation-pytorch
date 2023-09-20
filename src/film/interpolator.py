@@ -169,8 +169,7 @@ class Interpolator(nn.Module):
         return left_result + [this_midpoint_image] + right_result
 
     @torch.jit.export
-    def forward(self, x0, x1, num_bisections, final_timesteps) -> List[torch.Tensor]:
+    def forward(self, x0, x1, num_bisections, final_timesteps, times = [0,1]) -> List[torch.Tensor]:
         image_pyramids =  [util.build_image_pyramid(x0, self.pyramid_levels), util.build_image_pyramid(x1, self.pyramid_levels)]
         feature_pyramids = [self.extract(image_pyramids[0]), self.extract(image_pyramids[1])]
-        times = [0,1]
         return self.recursively_bisect(image_pyramids, feature_pyramids, num_bisections, final_timesteps, times)
